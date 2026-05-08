@@ -26,18 +26,12 @@ def main():
     #alpha,l1_ratio = best_model_params['alpha'],best_model_params['l1_ratio']
     #save_hyperparams(alpha, l1_ratio)
     #print(alpha,l1_ratio)
-    #
-
-    
-    models, best_model_params = tuning(df,alphas = [1, 10], l1_ratios = [0.3, 0.95],days_for_test_left = 2,n_days_valid=2, test_size=1*24) # days_for_test_left needed to separate train-val from test, which gives here test set of size of 45 days 
-    alpha,l1_ratio = best_model_params['alpha'],best_model_params['l1_ratio']
-    save_hyperparams(alpha, l1_ratio)
-    print(alpha,l1_ratio)
     
 
 
-    #y_true_test, y_all_preds, test_timestamps = time_series_test(df,alpha=0.01,l1_ratio=0.3,n_days_test=45,test_size=1*24) # here we are running on the test set of 45 days size
-    y_true_test, y_all_preds, test_timestamps = time_series_test(df,alpha=0.01,l1_ratio=0.3,n_days_test=2,test_size=1*24) 
+
+    y_true_test, y_all_preds, test_timestamps = time_series_test(df,alpha=0.01,l1_ratio=0.3,n_days_test=45,test_size=1*24) # here we are running on the test set of 45 days size
+
     print('Mean Absolute Error', mean_mae(y_true_test, y_all_preds))
     print('Root Mean Square Error', rmse(y_true_test, y_all_preds))
 
