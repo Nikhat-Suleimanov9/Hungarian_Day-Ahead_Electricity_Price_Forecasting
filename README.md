@@ -160,18 +160,26 @@ The dataset is split into three consecutive temporal blocks:
 **Why not random split?** Electricity prices are sequentially correlated and a random split does not respect the time axis strictly.
 
 **Walk-forward evaluation** is used for both validation and test periods. On each day *d*:
-Split 1:
-|------ TRAIN ------| TEST day 1 |
-
-Split 2:
-|-------- TRAIN --------| TEST day 2 |
-
-Split 3:
-|----------- TRAIN -----------| TEST day 3 |
 
 1. Retrain on all data up to day *d*
 2. Forecast the 24 hours of day *d+1*
 3. Record errors, retrain all data up to day *d+1*, forecast *d+2* and etc.
+
+Split 1:
+```
+|------ TRAIN ------| TEST day 1 |
+```
+
+Split 2:
+```
+|-------- TRAIN --------| TEST day 2 |
+```
+
+Split 3:
+```
+|----------- TRAIN -----------| TEST day 3 |
+```
+and etc.
 
 This expanding window mirrors production well. The model sees more data as time progresses, and yesterday's realised price feeds into today's lag features. Retraining daily is important precisely because the 24h and 48h lags can make the most recent observation highly influential. Also forecasting daily is usual.
 
