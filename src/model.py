@@ -2,9 +2,9 @@ import numpy as np
 import pandas as pd
 from .evaluation import mean_mae,rmse
 from sklearn.linear_model import ElasticNet
-from sklearn.multioutput import MultiOutputRegressor
+from sklearn.feature_selection import SelectFromModel
 from sklearn.model_selection import TimeSeriesSplit
-from .feature import scale_X_and_split,scale_target,inverse_scale_target
+from .feature import scale_target,inverse_scale_target,scale_features,split_nums_cats,get_train_test_num_cat_arr,combine_num_cat_arr
 from sklearn.base import BaseEstimator
 
 
@@ -12,14 +12,12 @@ from sklearn.base import BaseEstimator
 def get_TimeSeriesSplit(n_splits : int = 45, test_size : int = 1*24):
     tss = TimeSeriesSplit(n_splits=n_splits,test_size=test_size)
     return tss
-
+'''
 def train_model(X_train : np.ndarray,y_train : np.ndarray, alpha = 0.01, l1_ratio = 0.9):
-    '''
-    Train an ElasticNet model
-    '''
+   
     reg = MultiOutputRegressor(ElasticNet(alpha=alpha, l1_ratio=l1_ratio))  
     reg.fit(X_train,y_train)
-    return reg
+    return reg'''
 
 def predict(model : BaseEstimator ,X_test : np.ndarray):
     y_pred = model.predict(X_test)
@@ -65,18 +63,26 @@ def time_series_test(df : pd.DataFrame, alpha = 0.01, l1_ratio = 0.9, n_days_tes
         train = df.iloc[train_idx]
         test = df.iloc[val_idx]
         
-        X_train_scaled,y_train,X_test_scaled,y_test = scale_X_and_split(train,test)
+        df_num_train, df_cat_fourier_train = split_nums_cats(train)
+        df_num_test, df_cat_fourier_test = split_nums_cats(test)
+        
+        X_trainNUM, X_trainCAT, y_train, X_testNUM, X_testCAT, y_test = get_train_test_num_cat_arr(df_num_train, df_cat_fourier_train,df_num_test,df_cat_fourier_test)
+        
+        X_train_scaled_NUM,X_test_scaled_NUM = scale_features(X_trainNUM,X_testNUM)
+
+        
+        X_train_scaled = combine_num_cat_arr(X_train_scaled_NUM,X_trainCAT)
+        X_test_scaled = combine_num_cat_arr(X_test_scaled_NUM,X_testCAT)
+        
+
+        
         y_train_scaled,scaler = scale_target(y_train)
 
-        reg = train_model(X_train_scaled,y_train_scaled,alpha = alpha, l1_ratio=l1_ratio)
+        regs,selectors = train_models_filtering(X_train_scaled,y_train_scaled,alpha = alpha, l1_ratio=l1_ratio)
             
     
-        y_pred_scaled = predict(reg,X_test_scaled)
+        y_pred_scaled = predict_filtered(regs,selectors,X_test_scaled)
         y_pred = inverse_scale_target(y_pred_scaled,scaler)
-    
-    
-        y_test = np.array(y_test).ravel()
-        y_pred = np.array(y_pred).ravel()
     
      
         test_predictions.append(y_pred)
@@ -91,3 +97,43 @@ def time_series_test(df : pd.DataFrame, alpha = 0.01, l1_ratio = 0.9, n_days_tes
     y_all_preds = y_all_preds.ravel()
     
     return y_true_test, y_all_preds, test_timestamps
+
+
+def predict_filtered(models, selectors, X_test : np.ndarray):
+    preds = []
+    for h in range(24):
+        X_selected=selectors[h].transform(X_test)
+        preds.append(models[h].predict(X_selected))
+        
+    y_pred = np.column_stack(preds)
+    return y_pred
+
+def train_models_filtering(X_train : np.ndarray,y_train : np.ndarray, alpha = 0.01, l1_ratio = 0.9,threshold = 0.001):
+    '''
+    Train an ElasticNet models
+    '''
+
+    models = []
+    selectors  = []
+    for h in range(24):
+        selector = SelectFromModel(
+            ElasticNet(alpha=alpha, l1_ratio=l1_ratio, random_state=42),
+            threshold = threshold
+        )
+        
+        selector.fit(X_train, y_train[:, h])
+        X_selected = selector.transform(X_train)
+        
+        
+
+        model = ElasticNet(
+                alpha=alpha,
+                l1_ratio=l1_ratio,
+                random_state=42
+            )
+        model.fit(X_selected, y_train[:, h])
+        models.append(model)
+        selectors.append(selector)
+        
+
+    return models,selectors

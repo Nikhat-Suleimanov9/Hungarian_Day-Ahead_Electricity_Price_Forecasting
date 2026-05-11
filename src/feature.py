@@ -11,6 +11,26 @@ def demand_minus_solar(df : pd.DataFrame):
   df['demand_minus_solar'] = df['demand_forecast_mwh'] - df['solar_forecast_mwh']
   return df
 
+def calc_ramps(df, columns = ['demand_forecast_mwh','solar_forecast_mwh','net_exchange_forecast_mwh','price_eur_mwh']):
+    df = df.copy()
+    
+    for col in columns:
+        if col == 'price_eur_mwh':
+            df[f'{col}_ramp_24_48'] = df[f'{col}_lag_24'] - df[f'{col}_lag_48']
+            df[f'{col}_ramp_48_168'] = df[f'{col}_lag_48'] - df[f'{col}_lag_168']
+        else:
+            df[f'{col}_ramp_curr_24'] = df[col] - df[f'{col}_lag_24']
+            df[f'{col}_ramp_curr_168'] = df[col] - df[f'{col}_lag_168']
+
+    return df    
+def cross_intreactions(df,columns = ['demand_forecast_mwh','solar_forecast_mwh','net_exchange_forecast_mwh']):
+    df = df.copy()
+    for i in range(len(columns)):
+        for j in range(i+1,len(columns)):
+            df[f'{columns[i]} x {columns[j]}'] = df[columns[i]] * df[columns[j]]
+    return df        
+
+    
 def get_calendar_features(df : pd.DataFrame):
   '''
   getting calendar features such as year, month, day, hour, a day of a week, is_weekend flag, and season
@@ -21,7 +41,7 @@ def get_calendar_features(df : pd.DataFrame):
   df['day'] = df.index.day
   df['hour'] = df.index.hour
   df['dayofweek'] = df.index.dayofweek
-  df['is_weekend'] = df.index.dayofweek >=5
+
 
   def get_season(month):
       if month in [12,1,2]:
@@ -39,7 +59,7 @@ def get_calendar_features(df : pd.DataFrame):
 
   return df
 
-def drop_unused_features(df : pd.DataFrame,cols_to_drop : list =['day','hour','month']):
+def drop_unused_features(df : pd.DataFrame,cols_to_drop : list =['day','hour','month','year']):
     '''
     Dropping unnecessary features and NaNs
     '''
@@ -69,8 +89,8 @@ def add_fourier_features(df : pd.DataFrame,column_name : str, period : int, orde
     df=df.copy()
     
     for k in range(1, order + 1):
-        df[f'fourier_{period}_sin_order_{order}'] = np.sin(2 * np.pi * k * df[column_name] / period)
-        df[f'fourier_{period}_cos_order_{order}'] = np.cos(2 * np.pi * k * df[column_name] / period)
+        df[f'fourier_{period}_sin_order_{k}'] = np.sin(2 * np.pi * k * df[column_name] / period)
+        df[f'fourier_{period}_cos_order_{k}'] = np.cos(2 * np.pi * k * df[column_name] / period)
     return df   
 
 def add_rolling_stats(df : pd.DataFrame, target_col : str = 'price_eur_mwh'):
@@ -124,48 +144,53 @@ def inverse_scale_target(y_pred : np.ndarray,scaler : RobustScaler):
     return y
     
 
-def scale_X_and_split(df_train : pd.DataFrame,df_test : pd.DataFrame):
-    '''
-    Separates continuous and categorical features, scales only continuous variables, 
-    recombines them, and then splits data into train/test sets for X and y.
-    '''
-    float_cols = df_train.select_dtypes(include=['float64']).columns
+def split_nums_cats(df):
+    float_cols = df.select_dtypes(include=['float64']).columns
     nums = [col for col in float_cols if not col.startswith('fourier')]
-    cats = [col for col in df_train.columns if col not in nums]  
-
-    X_train_num = df_train[nums]
-    X_test_num  = df_test[nums]
-    X_train_cat = df_train[cats + ['price_eur_mwh']]
-    X_test_cat = df_test[cats + ['price_eur_mwh']]
+    cats_fourier = [col for col in df.columns if col not in nums]
+        
+    df_num = df[nums]    
+    df_cat_fourier =df[cats_fourier + ['price_eur_mwh']]  
     
-    X_trainNUM, y_trainNUM = reshape_df(X_train_num)
-    X_trainCAT, y_trainCAT = reshape_df(X_train_cat)
-    X_testNUM, y_testNUM = reshape_df(X_test_num)
-    X_testCAT, y_testCAT = reshape_df(X_test_cat)
-    
-    n_days_train = X_trainNUM.shape[0] 
-    x_num_features_train = X_trainNUM.shape[1]//24
-    x_cat_features_train = X_trainCAT.shape[1]//24
-    
-    n_days_test = X_testNUM.shape[0]
-    x_num_features_test = X_testNUM.shape[1]//24
-    x_cat_features_test = X_testCAT.shape[1]//24
+    return df_num, df_cat_fourier
 
+def corr_filtering(df, threshold = 0.95):
+    X = df.drop('price_eur_mwh', axis=1)
+  
+
+
+    float_cols = X.select_dtypes(exclude=['bool']).columns
+    bool_cols = X.select_dtypes(include=['bool']).columns
     
-    x_num_3d_train = X_trainNUM.reshape(n_days_train,24,x_num_features_train)
-    x_cat_3d_train = X_trainCAT.reshape(n_days_train,24, x_cat_features_train)
-    X_train = np.concatenate([x_num_3d_train,x_cat_3d_train],axis=2)
-    X_train = X_train.reshape(n_days_train, 24*(x_num_features_train + x_cat_features_train))
+    X_train_bool = X[bool_cols]
+    X_train = X[float_cols]
+    
+    corr_matrix = X_train.corr().abs()
+    upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(np.bool))
+    to_drop = [column for column in upper.columns if any(upper[column] > threshold)]
+    
 
- 
-    x_num_3d_test = X_testNUM.reshape(n_days_test,24,x_num_features_test)
-    x_cat_3d_test = X_testCAT.reshape(n_days_test,24,x_cat_features_test)
-    X_test = np.concatenate([x_num_3d_test,x_cat_3d_test],axis=2)
-    X_test = X_test.reshape(n_days_test, 24*(x_num_features_test + x_cat_features_test))
-
+    return to_drop
+   
+def get_train_test_num_cat_arr(df_train_num, df_train_cat,df_test_num,df_test_cat):
+    X_trainNUM, y_trainNUM = reshape_df(df_train_num)
+    X_trainCAT, y_trainCAT = reshape_df(df_train_cat)
+    X_testNUM, y_testNUM = reshape_df(df_test_num)
+    X_testCAT, y_testCAT = reshape_df(df_test_cat)
     y_train = y_trainNUM
     y_test = y_testNUM
-
-    X_train_scaled,X_test_scaled = scale_features(X_train,X_test)
     
-    return X_train_scaled,y_train,X_test_scaled,y_test
+    return X_trainNUM, X_trainCAT, y_train, X_testNUM, X_testCAT, y_test
+
+
+def combine_num_cat_arr(X_NUM,X_CAT):
+    
+    n_days_train = X_NUM.shape[0] 
+    x_num_features = X_NUM.shape[1]//24
+    x_cat_features = X_CAT.shape[1]//24
+
+    x_num_3d = X_NUM.reshape(n_days_train,24,x_num_features)
+    x_cat_3d = X_CAT.reshape(n_days_train,24, x_cat_features)
+    X = np.concatenate([x_num_3d,x_cat_3d],axis=2)
+    X = X.reshape(n_days_train, 24*(x_num_features + x_cat_features))
+    return X 

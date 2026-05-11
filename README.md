@@ -34,31 +34,86 @@ Hungarian electricity data follows CET, which creates irregularities at DST tran
 
 ### Engineered Features
 
+
 **Demand-solar interaction** — `demand_minus_solar` captures the net load that must be served by dispatchable generation, since solar directly offsets demand. 
 
-**Calendar features** — day of week, `is_weekend`, and month(Fourier). Weekend and intraday price shapes are structurally different and encode cleanly as linear features.Hourly structure is modeled using 24 distinct representations per day.
+**Cross-feature interactions** — pairwise products of all exogenous features 
+(`demand × solar`, `demand × net_exchange`, `solar × net_exchange`). These encode 
+non-linear relationships that a linear model cannot discover from individual features 
+alone.
 
-**Fourier features** — sine/cosine pairs over the monthly cycle to represent smooth seasonal variation without requiring the model to infer it from calendar dummies alone.
+**Ramp features** — differences between current and lagged values for exogenous features 
+(`curr - lag_24`, `curr - lag_168`), and between consecutive lags for price 
+(`lag_24 - lag_48`, `lag_48 - lag_168`). These capture the rate of change rather than 
+the absolute level — a sudden drop in solar or spike in net export can be more informative 
+than the level alone.
 
-**Lags** — 24h, 48h, and 168h lags for both the target and all exogenous features. Horizons were chosen to align with the same hour on the previous day, two days prior, and the same weekday last week. All lag choices respect the forecast horizon to prevent leakage.
+**Calendar features** — day of week and season. Intraday and weekday price shapes are 
+structurally different and encode cleanly as linear features.
 
-**Rolling statistics** — 24h and 168h windows: mean, std, min, max. Same-hour-7d mean and std additionally capture weekday-specific level and volatility. Applied to price only.
+**Fourier features** — sine/cosine pairs over the monthly cycle to represent smooth 
+seasonal variation without requiring the model to infer it from calendar dummies.
 
-### Target Transformation
+**Lags** — 24h, 48h, and 168h lags for the target and all exogenous features including 
+`demand_minus_solar`. Horizons align with the same hour on the previous day, two days 
+prior, and the same weekday last week. All lag choices are respected to 
+prevent leakage.
 
-Target was scaled with **RobustScaler** (resistant to price spikes), then transformed with **arcsinh** — equivalent to log for large positive values but well-defined for negative prices. [Chęć, Uniejewski & Weron – Electricity price seasonality forecasting paper (WUST).]
+**Rolling statistics** — daily mean, std, min, max over 24h and 7d windows. Same-hour-7d 
+mean and std additionally capture weekday-specific level and volatility. Applied to price 
+only.
+
+**Cross-temporal structure** — raw hourly data is reshaped to `(days, features × 24)` and the target to `(days,  24)`.
+before modelling, producing one wide row per day containing all 24 hours' feature values 
+concatenated. This means each model implicitly sees the full intraday picture — hour 13's 
+model has direct access to hour 12's and hour 14's lag, ramp, and exogenous values as 
+input columns, without any explicit feature engineering. Each of the 24 ElasticNet models 
+is trained on this same wide matrix but predicts only its own delivery hour, preserving 
+per-hour specialisation while retaining cross-hour information.
+
+
+
+
+### Feature Selection
+
+Although ElasticNet already performs implicit shrinkage and sparsity selection, 
+the reshaped daily-wide representation `(days, features × 24)` substantially increases 
+the dimensionality of the input space. An explicit feature selection stage therefore 
+helps remove noisy and redundant inputs before final fitting, improving stability and 
+reducing the risk of overfitting in the high-dimensional setting.
+
+That is why, a two-step selection is applied to keep only the most informative 
+features and reduce noise in the input space.
+
+**Step 1 — Correlation filtering** (global, applied once on training data before fitting): feature pairs with correlation above 0.95 are identified and the lower-variance feature is 
+dropped. ElasticNet's L2 penalty handles multicollinearity well, but removing 
+near-duplicate features reduces redundancy before any model sees the data.
+
+**Step 2 — SelectFromModel** (per hour, applied inside the walk-forward loop): for each 
+of the 24 delivery hours, a preliminary ElasticNet is fit and only features whose 
+coefficient magnitude exceeds a threshold are retained(0.001). The final ElasticNet for that 
+hour is then trained on this reduced feature set. This means each hour's model performs 
+its own independent selection — hour 3 (overnight load) and hour 13 (solar peak) 
+are likely to retain structurally different feature subsets, which is the correct 
+behaviour given their different price dynamics, rather than static features for each hour.
+
+Both steps use training data only to prevent leakage into validation and test periods.
 
 ### Input Scaling
 
-All features scaled with **RobustScaler** for the same reason — extreme spike values might otherwise dominate ElasticNet's regularisation.
+All features scaled with **RobustScaler** due to extreme spike values might otherwise dominate ElasticNet's regularisation.
 
 ### Missing Values
 
 NaNs introduced by lagging and rolling were dropped. These fall exclusively in the first week of the dataset — old, sparse, and negligible relative to total data size.
 
+### Target Transformation
+
+Target was scaled with **RobustScaler** (resistant to price spikes), then transformed with **arcsinh** — equivalent to log for large positive values but well-defined for negative prices. [Chęć, Uniejewski & Weron – Electricity price seasonality forecasting paper (WUST).]
+
 ### Reshaping
 
-Raw data is hourly `(timesteps × features)`. Before modelling, it is reshaped to `(days × features)`, where each of the 24 ElasticNet models sees one row per day and is trained and evaluated independently.
+Raw data is hourly `(timesteps × features)`. Before modelling, it is reshaped to `(days × features)`, where each of the 24 ElasticNet models sees one row per day and is trained and evaluated on it.
 
 ---
 
@@ -70,17 +125,25 @@ The core model is **ElasticNet** — a regularised linear regression with both L
 
 - **Structure fits the model.** Seasonality is already explicitly encoded through Fourier terms, calendar features, and same-hour lags — leaving the model to learn residual linear relationships rather than discover structure from scratch.
 - **24 separate models.** One model per delivery hour means each model specialises in its hour's dynamics — midday solar suppression, morning ramp, overnight baseload. This cleanly reduces variance compared to a single model handling all 24 hours at once.
-- **Interpretability, speed, and data efficiency.** Coefficients are directly inspectable, 24 models retrain in seconds, and regularisation handles the moderate dataset size (~730 days) without overfitting.
+- **Interpretability, speed, and data efficiency.** Coefficients are directly inspectable, 24 models retrain in seconds, and regularisation handles the moderate dataset size (~731 days) without overfitting.
 
 **Alternatives considered:**
 
 | Model | Outcome |
 |---|---|
-| **Seasonal naive** (same hour 7 days prior) | Baseline — MAE ~ 24.9. Useful floor to beat. |
-| **LightGBM** | Strong on tabular data in general, but MAE was worse than ElasticNet here, and a single LightGBM quite time.  | — MAE ~ 17.3 |
-| **Neural network** | Poor fit — only ~730 training days, 24 simultaneous outputs, and high computational cost. Simpler models were strongly favoured. |
+| **Seasonal naive** (same hour 7 days prior) | Baseline. Useful floor to beat. |
+| **LightGBM** | Strong on tabular data in general, but  was worse than ElasticNet here |
 
-ElasticNet outperforming LightGBM is consistent with the electricity price forecasting literature, where regularised linear models can remain state-of-the-art on well-engineered feature sets.[Chęć, Uniejewski & Weron – Electricity price seasonality forecasting paper (WUST).]
+Neural network were not even considered due to to computational cost, time and lack of data(24 outputs -> 731 around point to train). Instead, cross temporal and cross-feature interactions were introduced to our models, so they can benefit and mimic kind of neural net behaviour.
+
+Rather than switching to a neural architecture, cross-temporal and cross-feature 
+interactions were introduced through feature engineering — the reshaped `(days × 
+features×24)` input matrix gives each ElasticNet model access to the full intraday 
+picture, recovering some of the interaction modelling that a neural network might learn 
+implicitly. ElasticNet outperforming LightGBM on well-engineered features is consistent 
+with the electricity price forecasting literature, where regularised linear models remain 
+competitive even against tree-based methods. [Chęć, Uniejewski & Weron – Electricity 
+price forecasting, WUST.]
 
 ---
 
@@ -97,6 +160,14 @@ The dataset is split into three consecutive temporal blocks:
 **Why not random split?** Electricity prices are sequentially correlated and a random split does not respect the time axis strictly.
 
 **Walk-forward evaluation** is used for both validation and test periods. On each day *d*:
+Split 1:
+|------ TRAIN ------| TEST day 1 |
+
+Split 2:
+|-------- TRAIN --------| TEST day 2 |
+
+Split 3:
+|----------- TRAIN -----------| TEST day 3 |
 
 1. Retrain on all data up to day *d*
 2. Forecast the 24 hours of day *d+1*
@@ -106,29 +177,34 @@ This expanding window mirrors production well. The model sees more data as time 
 
 **Validation vs test distinction** — hyperparameters (ElasticNet α and l1-ratio) should be tuned based on validation period errors only. The test period should be touched once, at the very end, to report the final score. 
 
+All transformations, feature selection steps, and scaling operations were fit exclusively 
+on training data inside each walk-forward iteration to prevent temporal leakage.
+
 ---
 
 ## 6. Results & Error Metrics
 
 **Metrics used:** MAE and RMSE. A lot of papers use these, with MAE being main one, since it shows the average absolute forecasting error in €/MWh and treats all deviations equally as well as easy to interpret since absolute values. RMSE complements MAE by penalising large errors more heavily, making it sensitive to price spikes, which shows how the model performing under extreme conditions. For relative metric, to see in percenteges, usually MAPE used,however, for prices in electricy market, MAPE was excluded because it behaves poorly when true values are near or at zero, which occurs quie frequent in this dataset .
 
-| Period | MAE | RMSE |
+| Model | MAE | RMSE |
 |---|---|---|
-| Test | `14.56` | `24.76` |
+| Baseline | `24.93` | `41.17` |
+| LightGBM | `17.56` | `27.69` |
+| **24 Models: Elastic Net** | `14.37` | `24.26` |
 
-Given the price range of roughly €60–350/MWh, the achieved MAE represents a reasonable forecast error — the model captures the dominant patterns without huge deviations u.
+Given the price range of roughly €60–370/MWh, the achieved MAE represents a reasonable forecast error — the model captures the dominant patterns without huge deviations u.
 
 **Plot — Predicted vs Actual (Test Period)**
 
 The plot reveals several characteristics of model behaviour:
-![alt text](image.png)
+![alt text](results/plot_predicted.png)
 
 - **Main patterns are well captured** — intraday shape, weekday structure, and general price level track closely throughout most of the test period except for the spike.
 - **One spike event dominates the error.** Removing this single episode, MAE would likely fall to around 7–8 €/MWh.
 
 **Plot — Residuals (Test Period)**
 
-![alt text](image-1.png)
+![alt text](results/plot_residuals.png)
 
 - **Residuals are approximately zero-centred** — indicating almost no systematic bias in either direction.
 - **Model stabilises after the spike** — suggesting the expanding window absorbs the shock and recovers, rather than remaining persistently miscalibrated.
@@ -144,7 +220,7 @@ The plot reveals several characteristics of model behaviour:
 
 Adding these can have a high impact on the current model.
 
-**Data size.** ~730 days is modest. The ElasticNet handles this well, but limits the ability to model rare regimes  that appear only a handful of times in the training history. With several additional years of data, more expressive models — such as LSTMs, which have shown strong performance in electricity price forecasting — can be very good especially because of ability to learn non-linear relationships and also the outputs are related and can affect each other.
+**Data size.** ~730 days is modest. The ElasticNet handles this well, but limits the ability to model rare regimes  that appear only a handful of times in the training history. With several additional years of data, more expressive models — such as LSTMs, which have shown strong performance in electricity price forecasting — can be very good especially because of ability to learn non-linear relationships and also the outputs are related and can affect each other. But still, because of feature engineering, we made cross-temroal and cross-feature interactions to be clost to Neual network at cheap cost/
 
 **Static feature set.** The model has no ability to detect or adapt to structural market changes (like new behaviour) other than gradually through the expanding walk-forward window.
 
