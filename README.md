@@ -216,13 +216,13 @@ The plot reveals several characteristics of model behaviour:
 
 **Spike events.** The model struggles with sharp, short-timewise price spikes — as visible in the test period around November. After some readingthis coincided with an unusually cold period, where heating demand probably pushed prices far outside the normal range. 
 
-**Missing features.** The provided feature set covers demand and solar, but European electricity prices are also strongly driven by Wind generation, Gas prices, Tempreature, Weather
+**Missing features.** The provided feature set covers demand and solar, but European electricity prices are also strongly driven by Wind generation, Gas prices, Tempreature, Weather.Adding these can have a high impact on the current model.
 
-Adding these can have a high impact on the current model.
+**Data size.** ~730 days is modest. The ElasticNet handles this well, but limits the ability to model rare regimes  that appear only a handful of times in the training history.  Although cross-temporal and cross-feature interactions were introduced to partially 
+approximate the type of dependencies typically learned by neural networks, they are 
+a simplified. With additional years of data,  more expressive models such as LSTMs — which have demonstrated strong performance in electricity price forecasting can potentially yield further improvements due to their ability to capture complex non-linear temporal dependencies and higher-order feature interactions more effectively than linear models.
 
-**Data size.** ~730 days is modest. The ElasticNet handles this well, but limits the ability to model rare regimes  that appear only a handful of times in the training history. With several additional years of data, more expressive models — such as LSTMs, which have shown strong performance in electricity price forecasting — can be very good especially because of ability to learn non-linear relationships and also the outputs are related and can affect each other. But still, because of feature engineering, we made cross-temroal and cross-feature interactions to be clost to Neual network at cheap cost/
-
-**Static feature set.** The model has no ability to detect or adapt to structural market changes (like new behaviour) other than gradually through the expanding walk-forward window.
+**Limited capability to adapt to sturctual changes.** While there is walk-forward retrainig and some dynamic feature selection, model cannot detect drifts explicitly and respond to it accordingly. 
 
 ---
 
