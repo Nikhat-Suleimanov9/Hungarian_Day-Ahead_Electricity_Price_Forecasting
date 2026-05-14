@@ -32,12 +32,17 @@ def dst_handling(df : pd.DataFrame):
     df = df[~df.index.duplicated(keep="first")]
   return df
 
-def reshape_df(df : pd.DataFrame):
+def reshape_24h(df : pd.DataFrame):
     '''
     Since we produce 24 outputs at once, we should reshape accordingly
     input: df with target (hours,features + target)
-    output: X - (days, features*24); y - (days, 24)
+    output: X - (days, features*24 + 24 target hours)
     '''
+    df = df.copy()
+    day_index = pd.date_range(start = df.index[0], periods = len(df)//24, freq = 'D')
+
+    bool_cols = df.select_dtypes(include="bool").columns
+    
     if df.index[0].hour != 0:
         print('Problem with the index')
     df=df.copy()
@@ -46,6 +51,8 @@ def reshape_df(df : pd.DataFrame):
 
     df_X = df.drop(target,axis=1)
     df_y = df[target]
+    
+    features = df_X.columns.to_list()
     
     arr_X = df_X.values
     arr_y = df_y.values
@@ -56,4 +63,19 @@ def reshape_df(df : pd.DataFrame):
     X = arr_3d_X.reshape(num_days,24*n_features)
  
     y = arr_y.reshape(num_days,24)
-    return X, y
+
+    col_names_features = [f'{feature}_h{hour:02d}' for hour in range(24) for feature in features]
+
+    target_names = [f'{target}_h{hour:02d}' for hour in range(24)]
+
+    X_reshaped = pd.DataFrame(X, columns  = col_names_features)
+    y_reshaped = pd.DataFrame(y, columns  = target_names)
+    df_reshaped = pd.concat([X_reshaped,y_reshaped], axis=1)
+
+    bool_cols_hourly = [col for col in df_reshaped.columns if any(col.startswith(b) for b in bool_cols)]
+    df_reshaped[bool_cols_hourly] = df_reshaped[bool_cols_hourly].astype('bool')
+    rest = df_reshaped.columns.difference(bool_cols_hourly)
+    df_reshaped[rest] = df_reshaped[rest].astype('float64')
+    df_reshaped.index = day_index
+
+    return df_reshaped

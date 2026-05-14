@@ -4,12 +4,12 @@ from .evaluation import mean_mae,rmse
 from sklearn.linear_model import ElasticNet
 from sklearn.feature_selection import SelectFromModel
 from sklearn.model_selection import TimeSeriesSplit
-from .feature import scale_target,inverse_scale_target,scale_features,split_nums_cats,get_train_test_num_cat_arr,combine_num_cat_arr
+from .feature import scale_target,inverse_scale_target,scale_features
 from sklearn.base import BaseEstimator
 
 
 
-def get_TimeSeriesSplit(n_splits : int = 45, test_size : int = 1*24):
+def get_TimeSeriesSplit(n_splits : int = 45, test_size : int = 1):
     tss = TimeSeriesSplit(n_splits=n_splits,test_size=test_size)
     return tss
 '''
@@ -29,10 +29,10 @@ def train_dataset_size(df : pd.DataFrame, n_days_test : int = 45):
     The last 45 days are reserved for testing, while the training set includes all data up to 45 days before the end of the dataset.
     df_train output is used for training and validation
     '''
-    df_train = df[:-n_days_test*24]
+    df_train = df[:-n_days_test]
     return df_train
 
-def tuning(df : pd.DataFrame ,alphas : list = [0.01, 0.1, 1, 10], l1_ratios : list = [0.5, 0.7, 0.9], days_for_test_left = 45, n_days_valid=45, test_size=1*24):
+def tuning(df : pd.DataFrame ,alphas : list = [0.01, 0.1, 1, 10], l1_ratios : list = [0.5, 0.7, 0.9], days_for_test_left = 45, n_days_valid=45, test_size=1):
     '''
     Getting the best given hyperparameters
     '''
@@ -48,7 +48,7 @@ def tuning(df : pd.DataFrame ,alphas : list = [0.01, 0.1, 1, 10], l1_ratios : li
 
 
 
-def time_series_test(df : pd.DataFrame, alpha = 0.01, l1_ratio = 0.9, n_days_test : int = 45, test_size : int =1*24):
+def time_series_test(df : pd.DataFrame, alpha = 0.01, l1_ratio = 0.9, n_days_test : int = 45, test_size : int = 1):
     '''
     Walk-forward implementation using an expanding window with a 1-day test size over a 45-day evaluation period.
     '''
@@ -63,31 +63,31 @@ def time_series_test(df : pd.DataFrame, alpha = 0.01, l1_ratio = 0.9, n_days_tes
         train = df.iloc[train_idx]
         test = df.iloc[val_idx]
         
-        df_num_train, df_cat_fourier_train = split_nums_cats(train)
-        df_num_test, df_cat_fourier_test = split_nums_cats(test)
+        target = 'price_eur_mwh'
+        target_cols = [c for c in df.columns if c.startswith(target) and 'lag' not in c and 'x' not in c and 'ramp' not in c]
+        features = df.columns.difference(target_cols)
         
-        X_trainNUM, X_trainCAT, y_train, X_testNUM, X_testCAT, y_test = get_train_test_num_cat_arr(df_num_train, df_cat_fourier_train,df_num_test,df_cat_fourier_test)
         
-        X_train_scaled_NUM,X_test_scaled_NUM = scale_features(X_trainNUM,X_testNUM)
+        X_train = train[features].copy()
+        y_train = train[target_cols]
 
-        
-        X_train_scaled = combine_num_cat_arr(X_train_scaled_NUM,X_trainCAT)
-        X_test_scaled = combine_num_cat_arr(X_test_scaled_NUM,X_testCAT)
-        
+        X_test = test[features].copy()
+        y_test = test[target_cols]
 
-        
+
+
+        X_train_scaled, X_test_scaled = scale_features(X_train,X_test)  
         y_train_scaled,scaler = scale_target(y_train)
 
         regs,selectors = train_models_filtering(X_train_scaled,y_train_scaled,alpha = alpha, l1_ratio=l1_ratio)
-            
-    
+        
         y_pred_scaled = predict_filtered(regs,selectors,X_test_scaled)
         y_pred = inverse_scale_target(y_pred_scaled,scaler)
     
      
         test_predictions.append(y_pred)
         test_true_values.append(y_test)
-        timestamps.append(test.index)
+        timestamps.append(pd.date_range(start = test.index[0],periods=24,freq='h'))
     
     y_all_preds = np.concatenate(test_predictions)
     y_true_test=np.concatenate(test_true_values)
@@ -99,7 +99,7 @@ def time_series_test(df : pd.DataFrame, alpha = 0.01, l1_ratio = 0.9, n_days_tes
     return y_true_test, y_all_preds, test_timestamps
 
 
-def predict_filtered(models, selectors, X_test : np.ndarray):
+def predict_filtered(models, selectors, X_test : pd.DataFrame):
     preds = []
     for h in range(24):
         X_selected=selectors[h].transform(X_test)
@@ -108,7 +108,7 @@ def predict_filtered(models, selectors, X_test : np.ndarray):
     y_pred = np.column_stack(preds)
     return y_pred
 
-def train_models_filtering(X_train : np.ndarray,y_train : np.ndarray, alpha = 0.01, l1_ratio = 0.9,threshold = 0.001):
+def train_models_filtering(X_train : pd.DataFrame,y_train : np.ndarray, alpha = 0.01, l1_ratio = 0.9,threshold = 0.001):
     '''
     Train an ElasticNet models
     '''

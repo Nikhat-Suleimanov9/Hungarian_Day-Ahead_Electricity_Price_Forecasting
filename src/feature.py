@@ -1,4 +1,3 @@
-from .data import reshape_df
 import pandas as pd
 import numpy as np
 from sklearn.preprocessing import RobustScaler
@@ -23,12 +22,13 @@ def calc_ramps(df, columns = ['demand_forecast_mwh','solar_forecast_mwh','net_ex
             df[f'{col}_ramp_curr_168'] = df[col] - df[f'{col}_lag_168']
 
     return df    
-def cross_intreactions(df,columns = ['demand_forecast_mwh','solar_forecast_mwh','net_exchange_forecast_mwh']):
+
+'''  def cross_intreactions(df,columns = ['demand_forecast_mwh','solar_forecast_mwh','net_exchange_forecast_mwh']):
     df = df.copy()
     for i in range(len(columns)):
         for j in range(i+1,len(columns)):
             df[f'{columns[i]} x {columns[j]}'] = df[columns[i]] * df[columns[j]]
-    return df        
+    return df'''   
 
     
 def get_calendar_features(df : pd.DataFrame):
@@ -117,25 +117,27 @@ def add_rolling_stats(df : pd.DataFrame, target_col : str = 'price_eur_mwh'):
 
     return df_rolling_stats
 
-def scale_features(X_train : np.ndarray, X_test : np.ndarray):
+def scale_features(X_train : pd.DataFrame, X_test : pd.DataFrame):
     '''
     Robust Scaling features
     '''
+    num_cols = X_train.select_dtypes(include=['number']).columns
     scaler = RobustScaler()
-    X_train_scaled = scaler.fit_transform(X_train)
-    X_test_scaled = scaler.transform(X_test)
-    return X_train_scaled, X_test_scaled
+    X_train[num_cols] = scaler.fit_transform(X_train[num_cols])
+    X_test[num_cols] = scaler.transform(X_test[num_cols])
+    return X_train, X_test
+        
 
-def scale_target(y_train : np.ndarray):
+def scale_target(y_train : pd.DataFrame):
     '''
-    Robust Scaling target + asing transformation
+    Robust Scaling target + asinh transformation
     '''
     scaler = RobustScaler()
     y_train_scaled = scaler.fit_transform(y_train)
     y_train_scaled = np.arcsinh(y_train_scaled)
     return y_train_scaled,scaler
 
-def inverse_scale_target(y_pred : np.ndarray,scaler : RobustScaler):
+def inverse_scale_target(y_pred : np.ndarray, scaler : RobustScaler):
     '''
     Just inversing back to a normal scale
     '''
@@ -143,16 +145,6 @@ def inverse_scale_target(y_pred : np.ndarray,scaler : RobustScaler):
     y = scaler.inverse_transform(y_pred)
     return y
     
-
-def split_nums_cats(df):
-    float_cols = df.select_dtypes(include=['float64']).columns
-    nums = [col for col in float_cols if not col.startswith('fourier')]
-    cats_fourier = [col for col in df.columns if col not in nums]
-        
-    df_num = df[nums]    
-    df_cat_fourier =df[cats_fourier + ['price_eur_mwh']]  
-    
-    return df_num, df_cat_fourier
 
 def corr_filtering(df, threshold = 0.95):
     X = df.drop('price_eur_mwh', axis=1)
@@ -172,25 +164,26 @@ def corr_filtering(df, threshold = 0.95):
 
     return to_drop
    
-def get_train_test_num_cat_arr(df_train_num, df_train_cat,df_test_num,df_test_cat):
-    X_trainNUM, y_trainNUM = reshape_df(df_train_num)
-    X_trainCAT, y_trainCAT = reshape_df(df_train_cat)
-    X_testNUM, y_testNUM = reshape_df(df_test_num)
-    X_testCAT, y_testCAT = reshape_df(df_test_cat)
-    y_train = y_trainNUM
-    y_test = y_testNUM
+
+
+def cross_temp(df : pd.DataFrame, interactions = ['demand_forecast_mwh','solar_forecast_mwh','net_exchange_forecast_mwh','price_eur_mwh_lag_24','price_eur_mwh_lag_168'], n_neighbours = 3):
+    '''
+    Introducing cross-temporal and cross-feature interaction with default window 3: [h-3,h+3]
+    '''
+    df=df.copy()
+
+    new_cols = {}
+    window = n_neighbours
     
-    return X_trainNUM, X_trainCAT, y_train, X_testNUM, X_testCAT, y_test
+    for h in range(24):
+        for offset in range(-window,window+1):
 
-
-def combine_num_cat_arr(X_NUM,X_CAT):
-    
-    n_days_train = X_NUM.shape[0] 
-    x_num_features = X_NUM.shape[1]//24
-    x_cat_features = X_CAT.shape[1]//24
-
-    x_num_3d = X_NUM.reshape(n_days_train,24,x_num_features)
-    x_cat_3d = X_CAT.reshape(n_days_train,24, x_cat_features)
-    X = np.concatenate([x_num_3d,x_cat_3d],axis=2)
-    X = X.reshape(n_days_train, 24*(x_num_features + x_cat_features))
-    return X 
+            neighbour_h = h + offset 
+            if neighbour_h<0 or neighbour_h>23: 
+                continue
+            for f1 in range(len(interactions)):
+                for f2 in range(f1 ,len(interactions)): 
+                    if neighbour_h < h  or (offset==0 and f1==f2):
+                        continue
+                    new_cols[f'{interactions[f1]}_h{h:02d}x{interactions[f2]}_h{neighbour_h:02d}'] = df[f'{interactions[f1]}_h{h:02d}'] * df[f'{interactions[f2]}_h{neighbour_h:02d}']#
+    return pd.concat([df,pd.DataFrame(new_cols)],axis=1)    

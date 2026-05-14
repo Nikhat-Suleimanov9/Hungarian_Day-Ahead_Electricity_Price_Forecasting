@@ -63,14 +63,13 @@ prevent leakage.
 mean and std additionally capture weekday-specific level and volatility. Applied to price 
 only.
 
-**Cross-temporal structure** — raw hourly data is reshaped to `(days, features × 24)` and the target to `(days,  24)`.
-before modelling, producing one wide row per day containing all 24 hours' feature values 
-concatenated. This means each model implicitly sees the full intraday picture — hour 13's 
-model has direct access to hour 12's and hour 14's lag, ramp, and exogenous values as 
-input columns, without any explicit feature engineering. Each of the 24 ElasticNet models 
-is trained on this same wide matrix but predicts only its own delivery hour, preserving 
-per-hour specialisation while retaining cross-hour information.
+**Cross-temporal and cross-feature structure** — raw hourly data is reshaped to `(days, features × 24 + 24 target hours)`.
+Each model implicitly sees the full intraday picture — hour 13's model has direct access to hour 12's and hour 14's lag, ramp, and exogenous values as input columns. 
+In addition, cross-temporal and cross-feature interactions were introduced — while the reshaped matrix gives each model access to other hours' values as additive inputs, a linear model cannot learn that two hours' features interactions. To address this, explicit multiplicative interaction terms were engineered:
 
+Same-hour cross-feature products (e.g. solar_h13 × demand_h13) — captures non-linear midday suppression where high solar and high demand simultaneously can decrease price more than either predicts additively.
+
+Neighbour cross-hour products (window=3) — for each hour h, products with hours h-3 to h+3 across all exogenous features and price lags. It can captures non-linear effects where demand or solar conditions at one hour influence price pressure in the hours immediately following.
 
 
 
@@ -85,7 +84,7 @@ reducing the risk of overfitting in the high-dimensional setting.
 That is why, a two-step selection is applied to keep only the most informative 
 features and reduce noise in the input space.
 
-**Step 1 — Correlation filtering** (global, applied once on training data before fitting): feature pairs with correlation above 0.95 are identified and the lower-variance feature is 
+**Step 1 — Correlation filtering** (global, applied once on training data before fitting and reshaping): feature pairs with correlation above 0.95 are identified and the lower-variance feature is 
 dropped. ElasticNet's L2 penalty handles multicollinearity well, but removing 
 near-duplicate features reduces redundancy before any model sees the data.
 
@@ -134,7 +133,7 @@ The core model is **ElasticNet** — a regularised linear regression with both L
 | **Seasonal naive** (same hour 7 days prior) | Baseline. Useful floor to beat. |
 | **LightGBM** | Strong on tabular data in general, but  was worse than ElasticNet here |
 
-Neural network were not even considered due to to computational cost, time and lack of data(24 outputs -> 731 around point to train). Instead, cross temporal and cross-feature interactions were introduced to our models, so they can benefit and mimic kind of neural net behaviour.
+Neural networks were not even considered due to to computational cost, time and lack of data(24 outputs -> 731 around point to train). Instead, cross temporal and cross-feature interactions were introduced to our models, so they can benefit and mimic kind of neural net behaviour.
 
 Rather than switching to a neural architecture, cross-temporal and cross-feature 
 interactions were introduced through feature engineering — the reshaped `(days × 
@@ -198,7 +197,7 @@ on training data inside each walk-forward iteration to prevent temporal leakage.
 |---|---|---|
 | Baseline | `24.93` | `41.17` |
 | LightGBM | `17.56` | `27.69` |
-| **24 Models: Elastic Net** | `14.37` | `24.26` |
+| **24 Models: Elastic Net** | `13.68` | `23.55` |
 
 Given the price range of roughly €60–370/MWh, the achieved MAE represents a reasonable forecast error — the model captures the dominant patterns without huge deviations u.
 
@@ -237,8 +236,9 @@ a simplified. With additional years of data,  more expressive models such as LST
 ## 8. Code Structure
 
 ```
+experiments/ # Baseline and LightGBM notebook
 src/
-  data.py         # data loading, converting to CET, DST handling
+  data.py         # data loading, converting to CET, DST handling, reshaping
   features.py     # feature engineering, scaling, target transformation, splitting
   model.py        # defines train/validation and test sizes, walk-forward loop: expanding window retraining, TimeSeriesSplit for hyperparameter tuning and evaluation
   evaluate.py     # metrics, plots
